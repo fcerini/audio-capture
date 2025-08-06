@@ -17,17 +17,16 @@ import (
 )
 
 const (
-	// PulseAudio settings
-	// These must match the `parec` command arguments.
-	sampleRate   = 44100 // Audio sample rate
-	channels     = 2     // Number of audio channels (2 for stereo)
-	bitDepth     = 16    // Bit depth (16 for s16le)
-	audioBitrate = sampleRate * channels * bitDepth
+	// PulseAudio settings for L16 audio
+	// We capture at 48kHz stereo to match the audio source.
+	sampleRate = 48000 // Audio sample rate
+	channels   = 2    // Number of audio channels (2 for stereo)
+	bitDepth   = 16   // Bit depth (16 for s16be)
 
-	// RTP settings
-	payloadType  = 0    // RTP payload type for PCMU (G.711 μ-law)
-	rtpClockRate = 8000 // Clock rate for PCMU
-	mtu          = 1500 // Maximum Transmission Unit for RTP packets
+	// RTP settings for L16 (Linear PCM)
+	payloadTypeL16 = 96   // Dynamic payload type for L16
+	rtpClockRate   = 48000 // Clock rate for L16 must match sample rate
+	mtu            = 1500 // Maximum Transmission Unit for RTP packets
 )
 
 func main() {
@@ -58,14 +57,14 @@ func main() {
 
 	// 4. Start audio capture and streaming
 	log.Printf("🎤 Starting audio capture from PulseAudio source: %s", pulseDevice)
-	log.Printf("📡 Streaming RTP to: %s", destination)
+	log.Printf("📡 Streaming L16 PCM audio to: %s", destination)
 	parecCmd, err := startStreaming(destination, pulseDevice)
 	if err != nil {
 		log.Fatalf("❌ Failed to start streaming: %v", err)
 	}
 
 	// 5. Wait for shutdown signal
-	<-sigs
+	<-	sigs
 	log.Println("\n🛑 Received shutdown signal. Cleaning up...")
 
 	// 6. Clean up processes
@@ -96,19 +95,19 @@ func startStreaming(destination, pulseDevice string) (*exec.Cmd, error) {
 		return nil, fmt.Errorf("failed to dial UDP: %w", err)
 	}
 
-	// Create RTP packetizer
+	// Create RTP packetizer for L16 audio
 	packetizer := rtp.NewPacketizer(
 		uint16(mtu),
-		payloadType,
+		payloadTypeL16,
 		rand.Uint32(),
-		&pcmToMuLawPayloader{},
+		&pcmPayloader{},
 		rtp.NewRandomSequencer(),
 		rtpClockRate,
 	)
 
 	// Start PulseAudio recorder `parec`
-	// Format: s16le = Signed 16-bit Little-Endian PCM
-	parecCmd := exec.Command("parec", "--format=s16le", fmt.Sprintf("--rate=%d", sampleRate), fmt.Sprintf("--channels=%d", channels), fmt.Sprintf("--device=%s", pulseDevice))
+	// Format: s16be = Signed 16-bit Big-Endian PCM (Network Byte Order)
+	parecCmd := exec.Command("parec", "--format=s16be", fmt.Sprintf("--rate=%d", sampleRate), fmt.Sprintf("--channels=%d", channels), fmt.Sprintf("--device=%s", pulseDevice))
 
 	stdout, err := parecCmd.StdoutPipe()
 	if err != nil {
@@ -122,7 +121,7 @@ func startStreaming(destination, pulseDevice string) (*exec.Cmd, error) {
 	// Start a goroutine to read audio data, packetize, and send
 	go func() {
 		defer conn.Close()
-		// Buffer size for 20ms of audio data
+		// Buffer size for 20ms of audio data: 48000 samples/sec * 2 channels * 16 bits/sample / 8 bits/byte * 0.020 sec = 3840 bytes
 		bufferSize := (sampleRate / 50) * channels * (bitDepth / 8)
 		reader := bufio.NewReaderSize(stdout, bufferSize)
 
@@ -142,87 +141,44 @@ func startStreaming(destination, pulseDevice string) (*exec.Cmd, error) {
 				continue
 			}
 
-			// Packetize the audio data using our custom payloader
-			// The number of "samples" for RTP is based on the RTP clock rate, not the raw audio sample rate.
-			// For 20ms of data: 8000 samples/sec * 0.020 sec = 160 samples
+			// The number of "samples" for RTP is based on the RTP clock rate.
+			// For 20ms of data: 48000 samples/sec * 0.020 sec = 960 samples
 			samples := uint32(rtpClockRate / 50)
 			packets := packetizer.Packetize(pcmData, samples)
 
 			// Send the RTP packets over the UDP connection
 			for _, p := range packets {
 				data, err := p.Marshal()
-				if err != nil {
-					log.Printf("❌ Failed to marshal RTP packet: %v", err)
-					continue
-				}
-				if _, err := conn.Write(data); err != nil {
-					log.Printf("❌ Failed to send RTP packet: %v", err)
+					if err != nil {
+						log.Printf("❌ Failed to marshal RTP packet: %v", err)
+						continue
+					}
+					if _, err := conn.Write(data); err != nil {
+						log.Printf("❌ Failed to send RTP packet: %v", err)
+					}
 				}
 			}
-		}
-	}()
+		}()
 
-	return parecCmd, nil
+		return parecCmd, nil
 }
 
-// pcmToMuLawPayloader implements the rtp.Payloader interface.
-// It converts raw 16-bit PCM audio into G.711 μ-law format.
+// pcmPayloader implements the rtp.Payloader interface for raw PCM data.
+// It simply chunks the payload based on the MTU.
+type pcmPayloader struct{}
 
-type pcmToMuLawPayloader struct{}
-
-func (p *pcmToMuLawPayloader) Payload(mtu uint16, payload []byte) [][]byte {
+func (p *pcmPayloader) Payload(mtu uint16, payload []byte) [][]byte {
 	var out [][]byte
 
-	// Downsample and encode PCM to μ-law
-	// This is a simple implementation. A more advanced version would use proper resampling.
-	// Here we just pick one channel and decimate samples to fit the 8kHz clock rate.
-	step := (sampleRate / rtpClockRate) * channels
-	muLawPayload := make([]byte, 0, len(payload)/(2*step)+1)
-
-	for i := 0; i+1 < len(payload); i += 2 * step {
-		sample := int16(payload[i]) | int16(payload[i+1])<<8 // Little-endian 16-bit sample
-		muLawPayload = append(muLawPayload, linearToMuLaw(sample))
-	}
-
 	// Split into MTU-sized chunks if necessary
-	for len(muLawPayload) > 0 {
-		chunkSize := len(muLawPayload)
+	for len(payload) > 0 {
+		chunkSize := len(payload)
 		if chunkSize > int(mtu) {
 			chunkSize = int(mtu)
 		}
-		out = append(out, muLawPayload[:chunkSize])
-		muLawPayload = muLawPayload[chunkSize:]
+		out = append(out, payload[:chunkSize])
+		payload = payload[chunkSize:]
 	}
 
 	return out
-}
-
-// linearToMuLaw converts a 16-bit linear PCM sample to an 8-bit μ-law sample.
-// This is a standard G.711 μ-law encoding algorithm.
-func linearToMuLaw(sample int16) byte {
-	const (
-		bias      = 0x84
-		quantMask = 0x0F
-		segMask   = 0x70
-		mu        = 255
-	)
-
-	sign := sample >> 15 & 0x80
-	if sign != 0 {
-		sample = -sample
-	}
-	if sample > 32635 {
-		sample = 32635
-	}
-
-	sample += bias
-	exponent := 7
-	for i := int16(0x4000); (sample & i) == 0; i >>= 1 {
-		exponent--
-	}
-
-	position := (sample >> (exponent + 3)) & quantMask
-	segment := byte(exponent << 4)
-
-	return ^(byte(sign) | segment | byte(position))
 }
