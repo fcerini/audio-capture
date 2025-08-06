@@ -6,8 +6,8 @@ This Go program captures audio from a specific application (like Firefox) on a L
 
 - Opens Firefox to a specified URL to act as the audio source.
 - Captures audio from a specific PulseAudio monitor source.
-- Encodes the audio to G.711 μ-law (PCMU) format.
-- Packetizes the audio into RTP packets using the Pion library.
+- Encodes the audio to **16-bit mono Linear PCM (L16)** format.
+- Packetizes the audio into RTP packets using the Pion library with a dynamic payload type.
 - Streams the RTP packets over UDP to a network destination.
 - Handles graceful shutdown on `Ctrl+C`.
 
@@ -69,8 +69,19 @@ You can use a media player like `ffplay` (part of the FFmpeg suite) or VLC to li
 
 To do this, you need a simple **SDP (Session Description Protocol)** file to describe the stream to the player.
 
-1.  Create a file named `stream.sdp` with the content provided in this project.
-2.  Make sure the `c=` line in the SDP file matches the destination IP address you used when running the program.
+1.  Create a file named `stream.sdp` with the following content. The provided `stream.sdp` in this repository is already configured for this.
+
+    ```sdp
+    v=0
+    o=- 0 0 IN IP4 127.0.0.1
+    s=L16 Audio Stream from Go
+    c=IN IP4 127.0.0.1
+    t=0 0
+    m=audio 5004 RTP/AVP 96
+    a=rtpmap:96 L16/8000/1
+    ```
+
+2.  Make sure the `c=` line in the SDP file matches the destination IP address you used when running the program (e.g., `127.0.0.1` for local testing).
 3.  Open the stream with your player:
 
     **Using `ffplay`:**
