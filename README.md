@@ -1,21 +1,22 @@
 # Real-time Audio Capture and RTP Streamer
 
-This Go program captures audio from a specific application (like Firefox) on a Linux desktop using PulseAudio and streams it in real-time to a destination server using the Real-time Transport Protocol (RTP).
+This Go program captures audio from a specific application (Firefox) on a Linux desktop using PulseAudio and streams it in real-time to a destination using the Real-time Transport Protocol (RTP).
+
+It works by creating a dedicated, virtual audio "sink" in PulseAudio, launching Firefox with its audio output redirected to this sink, and then capturing the audio from the sink's "monitor" source.
 
 ## Features
 
-- Opens Firefox to a specified URL to act as the audio source.
-- Captures audio from a specific PulseAudio monitor source.
-- Encodes the audio to **16-bit mono Linear PCM (L16)** format.
-- Packetizes the audio into RTP packets using the Pion library with a dynamic payload type.
-- Streams the RTP packets over UDP to a network destination.
-- Handles graceful shutdown on `Ctrl+C`.
+- **Automatic Audio Isolation:** Creates a virtual PulseAudio sink to capture audio specifically from Firefox, without capturing all system audio.
+- **Launches Firefox:** Opens Firefox to a specified URL to act as the audio source.
+- **High-Quality Audio:** Encodes the audio to **16-bit, 48kHz, Stereo Linear PCM (L16)** format.
+- **RTP Streaming:** Packetizes the audio into RTP packets using the Pion library.
+- **Graceful Shutdown:** Cleans up the Firefox process and PulseAudio sink on `Ctrl+C`.
 
 ## Requirements
 
 - **Go:** Version 1.18 or later.
 - **Linux Operating System:** With PulseAudio installed (standard on most modern desktops like Ubuntu, Fedora, etc.).
-- **`parec`:** The PulseAudio recorder command-line tool. This is usually installed by default with PulseAudio.
+- **`pactl`:** The PulseAudio controller command-line tool (usually installed by default with PulseAudio).
 - **Firefox:** The browser to be used as the audio source.
 
 ## Setup
@@ -28,48 +29,36 @@ This Go program captures audio from a specific application (like Firefox) on a L
     go mod tidy
     ```
 
-3.  **Find Your PulseAudio Monitor Source:**
-    This is the most important step. You need to tell the program which audio output to "listen" to. On PulseAudio, every output device (like your speakers or headphones) has a corresponding "monitor" source.
-
-    Run the following command to list all your audio sources:
+3.  **Build the executable:**
+    This will create an `audio-capture` binary in your project directory.
     ```sh
-    pactl list sources short
+    go build
     ```
-
-    Look for a line that ends in `.monitor`. The name will depend on your hardware. It will look something like this:
-
-    ```
-    5    alsa_output.pci-0000_00_1f.3.analog-stereo.monitor    module-alsa-card.c    s16le 2ch 44100Hz    SUSPENDED
-    ```
-
-    The name you need is the second field: `alsa_output.pci-0000_00_1f.3.analog-stereo.monitor`. Copy this string.
 
 ## Usage
 
 Run the program from your terminal using the following format:
 
 ```sh
-go run main.go <URL> <DESTINATION_IP:PORT> <YOUR_PULSEAUDIO_MONITOR_SOURCE>
+./audio-capture <URL> <DESTINATION_IP:PORT>
 ```
 
 **Example:**
 
 ```sh
-go run main.go 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' 127.0.0.1:5004 alsa_output.pci-0000_00_1f.3.analog-stereo.monitor
+./audio-capture 'https://www.youtube.com/watch?v=dQw4w9WgXcQ' 127.0.0.1:5004
 ```
 
 - The program will launch Firefox to the YouTube URL.
-- It will start capturing any audio produced by your system's default output.
+- It will start capturing any audio produced by that Firefox instance.
 - It will stream this audio via RTP to port `5004` on your local machine.
-- Press `Ctrl+C` in the terminal to shut down the program, which will also close Firefox.
+- Press `Ctrl+C` in the terminal to shut down the program cleanly.
 
 ## How to Listen to the Stream
 
-You can use a media player like `ffplay` (part of the FFmpeg suite) or VLC to listen to the RTP stream.
+You can use a media player like VLC or `ffplay` to listen to the RTP stream. To do this, you need a simple **SDP (Session Description Protocol)** file to describe the stream to the player.
 
-To do this, you need a simple **SDP (Session Description Protocol)** file to describe the stream to the player.
-
-1.  Create a file named `stream.sdp` with the following content. The provided `stream.sdp` in this repository is already configured for this.
+1.  Create a file named `stream.sdp` with content like this:
 
     ```sdp
     v=0
@@ -78,20 +67,46 @@ To do this, you need a simple **SDP (Session Description Protocol)** file to des
     c=IN IP4 127.0.0.1
     t=0 0
     m=audio 5004 RTP/AVP 96
-    a=rtpmap:96 L16/8000/1
+    a=rtpmap:96 L16/48000/2
     ```
 
-2.  Make sure the `c=` line in the SDP file matches the destination IP address you used when running the program (e.g., `127.0.0.1` for local testing).
+2.  **Important:** Make sure the `c=IN IP4` address and the `m=audio` port in the SDP file match the destination IP and port you are sending the stream to.
+
 3.  Open the stream with your player:
-
-    **Using `ffplay`:**
-    ```sh
-    ffplay -protocol_whitelist file,rtp,udp -i stream.sdp
-    ```
 
     **Using VLC:**
     ```sh
     vlc stream.sdp
     ```
 
-You should hear the audio from the Firefox tab playing in `ffplay` or VLC after a short delay.
+    **Using `ffplay`:**
+    ```sh
+    ffplay -protocol_whitelist file,rtp,udp -i stream.sdp
+    ```
+
+## How to Run the Included Tests
+
+The `test/` directory contains scripts and SDP files to demonstrate the program. The test streams are configured to be sent to the IP address `172.21.100.46`.
+
+**Instructions:**
+
+1.  **Build the program** if you haven't already:
+    ```sh
+    go build
+    ```
+
+2.  **Choose a test to run (e.g., `test1`).**
+
+3.  **Start the listener:** On the machine where you want to hear the audio (e.g., the one with IP `172.21.100.46`), open the corresponding SDP file in VLC. This tells VLC to wait for the stream.
+    ```sh
+    vlc test/stream1.sdp
+    ```
+
+4.  **Run the streaming script:** In the project's root directory on your Linux machine, run the test script. This will start the `audio-capture` program, which will launch Firefox and begin sending the audio.
+    ```sh
+    ./test/test1.sh
+    ```
+
+You should now hear the audio from the radio station in VLC.
+
+To try the other test, simply use `stream2.sdp` and `test2.sh`.
