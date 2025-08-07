@@ -1,3 +1,3 @@
-./audio-capture 'https://www.youtube.com/watch?v=cb12KmMMDJA' 172.21.100.46:6001
+./audio-capture-client 'https://www.youtube.com/watch?v=cb12KmMMDJA' 127.0.0.1:6001
 
 

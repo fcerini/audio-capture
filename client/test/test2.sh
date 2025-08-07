@@ -1,3 +1,3 @@
-./audio-capture 'https://horizonte.fm' 172.21.100.46:6002
+./audio-capture-client 'https://horizonte.fm' 127.0.0.1:6001
 
 
