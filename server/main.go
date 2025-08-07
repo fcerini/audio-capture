@@ -6,26 +6,24 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	"github.com/pion/rtp"
-	"github.com/pion/rtp/codecs"
 )
 
 const (
 	// Port to listen on
-	listenPort = 4000
+	listenPort = 6001
 )
 
 func main() {
 	// Create a UDP listener
-	listener, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: listenPort})
+	listener, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("0.0.0.0"), Port: listenPort})
 	if err != nil {
 		panic(err)
 	}
 	defer listener.Close()
 
-	fmt.Printf("Listening for RTP on 127.0.0.1:%d\n", listenPort)
+	fmt.Printf("Listening for RTP on 0.0.0.0:%d\n", listenPort)
 
 	// Channel to handle Ctrl+C signal
 	sigs := make(chan os.Signal, 1)
@@ -64,6 +62,6 @@ func main() {
 	}()
 
 	// Wait for Ctrl+C
-	<-	sigs
+	<-sigs
 	fmt.Println("Shutting down server...")
 }
