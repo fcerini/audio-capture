@@ -21,7 +21,7 @@ import (
 const (
 	// PulseAudio settings for L16 audio
 	sampleRate = 48000 // Audio sample rate
-	channels   = 2     // Number of audio channels (2 for stereo)
+	channels   = 1     // Number of audio channels (1 for mono)
 	bitDepth   = 16    // Bit depth (16 for s16be)
 
 	// RTP settings for L16 (Linear PCM)
@@ -52,23 +52,44 @@ func main() {
 	}
 	moduleIndexStr := strings.TrimSpace(string(moduleIndex))
 
+	// TODO: Mmmm Si creo un profile nuevo, Firefox no arranca youtube...
+
+	// 3. Create a temporary Firefox profile in the user's home directory to avoid Snap confinement issues.
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		log.Fatalf("❌ Failed to get user home directory: %v", err)
+	}
+	profileDir, err := os.MkdirTemp(homeDir, "firefox-profile-*")
+	if err != nil {
+		log.Fatalf("❌ Failed to create temporary profile directory in home: %v", err)
+	}
+	log.Printf("🦊 Created temporary Firefox profile in: %s", profileDir)
+	// Defer cleanup of the profile directory for when the program exits
+	defer func() {
+		log.Printf("🦊 Removing temporary Firefox profile: %s", profileDir)
+		if err := os.RemoveAll(profileDir); err != nil {
+			log.Printf("⚠️  Failed to remove profile directory %s: %v", profileDir, err)
+		}
+	}()
+
 	// Add a delay to allow the sink to initialize fully before use.
 	log.Println("⏳ Waiting for PulseAudio sink to initialize...")
 	time.Sleep(2 * time.Second)
 
-	// 3. Set up graceful shutdown
+	// 4. Set up graceful shutdown
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 
-	// 4. Launch Firefox, directing its audio to our new sink
-	log.Printf("🚀 Launching Firefox with URL: %s", url)
-	firefoxCmd := exec.Command("firefox", "--new-window", url)
+	// 5. Launch Firefox in a new, isolated instance, directing its audio to our sink
+	log.Printf("🚀 Launching isolated Firefox instance with URL: %s", url)
+	//	firefoxCmd := exec.Command("firefox", "--new-instance", "--profile", profileDir, "--new-window", url)
+	firefoxCmd := exec.Command("firefox", "--new-instance", "--new-window", url)
 	firefoxCmd.Env = append(os.Environ(), fmt.Sprintf("PULSE_SINK=%s", sinkName))
 	if err := firefoxCmd.Start(); err != nil {
 		log.Fatalf("❌ Failed to start Firefox: %v", err)
 	}
 
-	// 5. Start audio capture and streaming from the new sink's monitor
+	// 6. Start audio capture and streaming from the new sink's monitor
 	pulseDevice := fmt.Sprintf("%s.monitor", sinkName)
 	log.Printf("🎤 Starting audio capture from PulseAudio source: %s", pulseDevice)
 	log.Printf("📡 Streaming L16 PCM audio to: %s", destination)
@@ -77,7 +98,7 @@ func main() {
 		log.Fatalf("❌ Failed to start streaming: %v", err)
 	}
 
-	// 6. Wait for shutdown signal and clean up
+	// 7. Wait for shutdown signal and clean up
 	<-sigs
 	log.Println("\n🛑 Received shutdown signal. Cleaning up...")
 
@@ -100,6 +121,7 @@ func main() {
 			log.Printf("⚠️ Failed to unload PulseAudio module %s: %v", moduleIndexStr, err)
 		}
 	}
+	// The deferred function for profile cleanup will run automatically now.
 
 	log.Println("✅ Cleanup complete. Exiting.")
 }
@@ -175,7 +197,6 @@ func startStreaming(destination, pulseDevice string) (*exec.Cmd, error) {
 			samples := uint32(rtpClockRate / 50)
 			packets := packetizer.Packetize(pcmData, samples)
 
-			firstError := true
 			for _, p := range packets {
 				data, err := p.Marshal()
 				if err != nil {
@@ -184,14 +205,7 @@ func startStreaming(destination, pulseDevice string) (*exec.Cmd, error) {
 				}
 				_, err = conn.Write(data)
 				if err != nil {
-					if firstError {
-						log.Printf("❌ Failed to send RTP packet: %v", err)
-						firstError = false
-					} else {
-						fmt.Printf("⚠️")
-					}
-				} else {
-					firstError = true
+					fmt.Printf("!")
 				}
 			}
 		}
